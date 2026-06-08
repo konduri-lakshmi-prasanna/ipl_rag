@@ -1,8 +1,8 @@
 langgraph
 langchain
-langchain-openai
+langchain-groq
 langchain-community
 langchain-core
 chromadb
 python-dotenv
-langchain-groq
+sentence-transformers

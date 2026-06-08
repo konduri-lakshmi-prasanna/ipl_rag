@@ -4,20 +4,20 @@ from state import IPLAgentState
 
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-def h2h_node(state: IPLAgentState) -> IPLAgentState:
+def team_node(state: IPLAgentState) -> IPLAgentState:
     vectorstore = Chroma(
         persist_directory="./chroma_db",
         embedding_function=embeddings,
         collection_name="ipl_rag"
     )
     retriever = vectorstore.as_retriever(
-        search_kwargs={"k": 4, "filter": {"section": "h2h"}}
+        search_kwargs={"k": 3, "filter": {"section": "team"}}
     )
 
     entities = state.get("entities", [])
-    query = f"head to head record {' vs '.join(entities)}" if entities else state["user_query"]
+    query = f"team profile {', '.join(entities)}" if entities else state["user_query"]
 
     docs = retriever.invoke(query)
-    print(f"[H2H] retrieved {len(docs)} chunks")
+    print(f"[Team] retrieved {len(docs)} chunks")
 
-    return {**state, "h2h_context": docs}
+    return {**state, "retrieved_chunks": docs}

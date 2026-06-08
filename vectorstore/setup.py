@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
@@ -217,7 +217,7 @@ def build_vectorstore():
     docs = create_all_chunks()
     print(f"Total chunks created: {len(docs)}")
 
-    embeddings = OpenAIEmbeddings()
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = Chroma.from_documents(
         documents=docs,
         embedding=embeddings,
@@ -229,7 +229,7 @@ def build_vectorstore():
 
 
 def load_vectorstore():
-    embeddings = OpenAIEmbeddings()
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     return Chroma(
         persist_directory="./chroma_db",
         embedding_function=embeddings,
