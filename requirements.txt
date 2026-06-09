@@ -1,8 +1,14 @@
 langgraph
 langchain
 langchain-groq
+langchain-huggingface
+langchain-chroma
 langchain-community
 langchain-core
 chromadb
 python-dotenv
 sentence-transformers
+fastapi
+uvicorn
+requests
+pydantic

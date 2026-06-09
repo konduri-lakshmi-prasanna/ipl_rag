@@ -1,22 +1,67 @@
+from contextlib import asynccontextmanager
+from typing import Optional
+import os
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
 from vectorstore.setup import build_vectorstore
 from graph import build_graph
 from state import IPLAgentState
-import os
 
-def initialize():
+load_dotenv()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global graph
     if not os.path.exists("./chroma_db"):
-        print("First run — building vector store...")
+        print("Building vector store...")
         build_vectorstore()
-    else:
-        print("Vector store already exists, skipping build.")
+    graph = build_graph()
+    print("IPL Intelligence Assistant ready.")
+    yield
 
-def run_query(graph, query: str):
-    print(f"\n{'='*50}")
-    print(f"QUERY: {query}")
-    print('='*50)
+app = FastAPI(
+    title="IPL Intelligence Assistant",
+    description="Multi-agent LangGraph RAG system for IPL queries",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+graph = None
+
+
+class QueryRequest(BaseModel):
+    question: str
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    query_type: str
+    sources: list
+    conflict_detected: bool
+    nodes_activated: list
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "graph": "ready" if graph else "not ready"}
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query(req: QueryRequest):
     initial_state: IPLAgentState = {
-        "user_query": query,
+        "user_query": req.question,
         "query_type": "",
         "entities": [],
         "batting_context": [],
@@ -27,30 +72,23 @@ def run_query(graph, query: str):
         "retrieved_chunks": [],
         "final_answer": "",
         "sources": [],
-        "conflict_detected": False
+        "conflict_detected": False,
     }
-
     result = graph.invoke(initial_state)
+    return QueryResponse(
+        answer=result["final_answer"],
+        query_type=result["query_type"],
+        sources=list(set(result["sources"])),
+        conflict_detected=result["conflict_detected"],
+        nodes_activated=list(set(result["sources"])),
+    )
 
-    print(f"\nANSWER:\n{result['final_answer']}")
-    print(f"\nSources used: {list(set(result['sources']))}")
-    print(f"Conflict detected: {result['conflict_detected']}")
-    return result
+
+@app.post("/eval")
+async def run_eval():
+    from evaluation.eval_runner import run_evaluation
+    return run_evaluation()
+
 
 if __name__ == "__main__":
-    initialize()
-    graph = build_graph()
-
-    # Easy queries
-    run_query(graph, "Who captains Chennai Super Kings in 2024?")
-    run_query(graph, "What is Virat Kohli's career IPL run tally?")
-    run_query(graph, "Which venue has the highest average first innings score?")
-
-    # Medium queries
-    run_query(graph, "List all bowlers with an economy rate below 7.0")
-    run_query(graph, "What is Virat Kohli's form in the last 5 matches?")
-
-    # Hard queries
-    run_query(graph, "Who will win if MI plays CSK?")
-    run_query(graph, "Is Virat Kohli's career runs 7263 or 7084?")
-    run_query(graph, "Suggest a Dream11 XI for MI vs SRH at Wankhede")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
