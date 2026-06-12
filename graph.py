@@ -1,5 +1,12 @@
+"""
+graph.py  —  LangGraph Workflow Builder
+Updated graph with: query rewriting → routing → retrieval →
+reranking → confidence check (+ web fallback) → validation → synthesis
+"""
+
 from langgraph.graph import StateGraph, END
 from state import IPLAgentState
+from nodes.rewrite import rewrite_node
 from nodes.router import router_node
 from nodes.batting import batting_node
 from nodes.bowling import bowling_node
@@ -10,7 +17,13 @@ from nodes.records import records_node
 from nodes.synthesis import synthesis_node
 from nodes.validation import validation_node
 from nodes.team import team_node
+from nodes.reranker import reranker_node
+from nodes.confidence import confidence_node
 
+
+# ─────────────────────────────────────────────
+# Routing functions
+# ─────────────────────────────────────────────
 
 def route_query(state: IPLAgentState) -> str:
     qt = state.get("query_type", "out_of_scope")
@@ -24,41 +37,46 @@ def route_query(state: IPLAgentState) -> str:
     if qt == "form":                return "form"
     if qt == "dream11":             return "form"
 
-    return "synthesis"
+    return "synthesis"   # out_of_scope — skip retrieval entirely
 
 
 def route_after_form(state: IPLAgentState) -> str:
-    """After form: dream11 continues to batting, everything else stops"""
+    """dream11: form → batting → bowling → venue → reranker"""
     if state.get("query_type") == "dream11":
         return "batting"
-    return "validation"
+    return "reranker"
 
 
 def route_after_batting(state: IPLAgentState) -> str:
-    """After batting: dream11 continues to bowling, everything else stops"""
+    """dream11: batting → bowling; else → reranker"""
     if state.get("query_type") == "dream11":
         return "bowling"
-    return "validation"
+    return "reranker"
 
 
 def route_after_bowling(state: IPLAgentState) -> str:
-    """After bowling: dream11 continues to venue, everything else stops"""
+    """dream11: bowling → venue; else → reranker"""
     if state.get("query_type") == "dream11":
         return "venue"
-    return "validation"
+    return "reranker"
 
 
 def route_after_venue(state: IPLAgentState) -> str:
-    """After venue: prediction continues to form, everything else stops"""
+    """prediction/h2h: venue → form; else → reranker"""
     if state.get("query_type") in ["prediction", "h2h"]:
         return "form"
-    return "validation"
+    return "reranker"
 
+
+# ─────────────────────────────────────────────
+# Graph Builder
+# ─────────────────────────────────────────────
 
 def build_graph():
     graph = StateGraph(IPLAgentState)
 
-    # register all nodes
+    # ── Register all nodes ──────────────────────────────────────────────
+    graph.add_node("rewrite",    rewrite_node)      # NEW: query rewriting
     graph.add_node("router",     router_node)
     graph.add_node("team",       team_node)
     graph.add_node("batting",    batting_node)
@@ -67,13 +85,17 @@ def build_graph():
     graph.add_node("venue",      venue_node)
     graph.add_node("form",       form_node)
     graph.add_node("records",    records_node)
+    graph.add_node("reranker",   reranker_node)     # NEW: cross-encoder reranking
+    graph.add_node("confidence", confidence_node)   # NEW: confidence + web fallback
     graph.add_node("validation", validation_node)
     graph.add_node("synthesis",  synthesis_node)
 
-    # entry point
-    graph.set_entry_point("router")
+    # ── Entry point ─────────────────────────────────────────────────────
+    # Query is rewritten BEFORE routing for better classification + retrieval
+    graph.set_entry_point("rewrite")
+    graph.add_edge("rewrite", "router")
 
-    # routing from router — one destination per query type
+    # ── Routing from router ─────────────────────────────────────────────
     graph.add_conditional_edges("router", route_query, {
         "team":      "team",
         "batting":   "batting",
@@ -82,41 +104,36 @@ def build_graph():
         "venue":     "venue",
         "h2h":       "h2h",
         "form":      "form",
-        "synthesis": "synthesis",
+        "synthesis": "synthesis",   # out_of_scope: skip straight to synthesis
     })
 
-    # simple nodes — always go straight to validation
-    graph.add_edge("team",    "validation")
-    graph.add_edge("records", "validation")
+    # ── Simple nodes → reranker ─────────────────────────────────────────
+    # (reranker replaced direct → validation to add reranking step)
+    graph.add_edge("team",    "reranker")
+    graph.add_edge("records", "reranker")
+    graph.add_edge("h2h",     "venue")     # prediction path: h2h → venue → form
 
-    # batting — dream11 continues to bowling, plain batting stops
-    graph.add_conditional_edges("batting", route_after_batting, {
-        "bowling":    "bowling",
-        "validation": "validation",
-    })
-
-    # bowling — dream11 continues to venue, plain bowling stops
-    graph.add_conditional_edges("bowling", route_after_bowling, {
-        "venue":      "venue",
-        "validation": "validation",
-    })
-
-    # venue — prediction continues to form, plain venue/dream11 stops
-    graph.add_conditional_edges("venue", route_after_venue, {
-        "form":       "form",
-        "validation": "validation",
-    })
-
-    # h2h — always goes to venue next (prediction path)
-    graph.add_edge("h2h", "venue")
-
-    # form — dream11 continues to batting, plain form stops
+    # ── Dream11 multi-hop: form → batting → bowling → venue → reranker ──
     graph.add_conditional_edges("form", route_after_form, {
-        "batting":    "batting",
-        "validation": "validation",
+        "batting": "batting",
+        "reranker": "reranker",
+    })
+    graph.add_conditional_edges("batting", route_after_batting, {
+        "bowling":  "bowling",
+        "reranker": "reranker",
+    })
+    graph.add_conditional_edges("bowling", route_after_bowling, {
+        "venue":    "venue",
+        "reranker": "reranker",
+    })
+    graph.add_conditional_edges("venue", route_after_venue, {
+        "form":     "form",
+        "reranker": "reranker",
     })
 
-    # all paths converge here
+    # ── Post-retrieval pipeline: reranker → confidence → validation → synthesis ──
+    graph.add_edge("reranker",   "confidence")   # NEW
+    graph.add_edge("confidence", "validation")   # NEW
     graph.add_edge("validation", "synthesis")
     graph.add_edge("synthesis",  END)
 
